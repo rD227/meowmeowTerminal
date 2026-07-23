@@ -1,7 +1,7 @@
 """魔裁文本框核心逻辑"""
 from config import CONFIGS
 from utils.clipboard_utils import ClipboardManager
-from utils.miao_transform import modify_message
+from utils.miao_transform import process_message
 
 import keyboard
 import time
@@ -93,7 +93,7 @@ class ManosabaCore:
             return "错误: 输入框为空"
 
         # 加喵变换
-        transformed = modify_message(text)
+        transformed = process_message(text)
         print(f"[加喵] {text!r}")
         print(f"  → {transformed!r}")
 

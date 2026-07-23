@@ -1,7 +1,8 @@
 """
 加喵文字转换模块
-基于 main.java 的 modifyMessage() 逻辑移植
+基于 main.java 的 getMsg() + modifyMessage() 逻辑移植
 """
+import re
 
 # 特殊符号手动列表（遇到时在其前面插入"喵"）
 # 等同于 main.java 中的 specialSymbols 字段
@@ -35,15 +36,32 @@ def _ends_with_miao(buf: list[str]) -> bool:
     return False
 
 
+def process_message(msg: str) -> str:
+    """
+    完整处理流程，对应 main.java 的 getMsg()：
+    1. 骂人词始终替换
+    2. 词语喵化替换（什么→什喵 等）
+    3. 行级加喵变换（modifyMessage）
+    """
+    # 骂人词替换（始终生效）
+    for src in ("他妈", "踏马", "他么", "他马"):
+        msg = msg.replace(src, "他喵")
+    msg = re.sub(r'\btm\b', '他喵', msg, flags=re.ASCII | re.IGNORECASE)
+
+    # 词语喵化
+    msg = (msg
+           .replace("什么", "什喵")
+           .replace("怎么", "怎喵")
+           .replace("在吗", "在嘛")
+           .replace("不要啊", "不要呀"))
+
+    return modify_message(msg)
+
+
 def modify_message(msg: str) -> str:
     """
-    对消息文本执行加喵变换（对应 main.java modifyMessage）。
-
-    规则：
-    - http(s):// 或 # 开头的行原样保留，不处理
-    - 遇到特殊符号/emoji 前，若上一个字符不是"喵"则插入"喵"
-    - 连续 3 个及以上的 '.'（省略号）触发加喵；少于 3 个视为普通字符
-    - 行尾若无特殊符号且不以"喵"结尾，补一个"喵"
+    行级加喵变换（对应 main.java modifyMessage），通常不直接调用，
+    请使用 process_message() 获得完整处理。
     """
     lines = msg.split("\n")
     result_lines: list[str] = []
