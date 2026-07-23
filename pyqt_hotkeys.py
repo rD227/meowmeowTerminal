@@ -80,6 +80,8 @@ class HotkeyManager(QObject):
         # 执行相应的动作
         if action == "start_generate":
             self.gui.generate_image()
+        elif action == "send_text":
+            self.gui.send_text()
         elif action == "next_character":
             self._switch_character(1)
         elif action == "prev_character":

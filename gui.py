@@ -401,6 +401,35 @@ class ManosabaMainWindow(QMainWindow):
         """生成完成后的回调函数"""
         self.update_status(result)
         self.update_preview()
+
+    def send_text(self):
+        """发送加喵文本"""
+        if self.is_generating:
+            return
+
+        self.is_generating = True
+        self.update_status("正在发送文本...")
+
+        def _run():
+            try:
+                result = self.core.send_text()
+                QMetaObject.invokeMethod(
+                    self, "_on_generation_complete",
+                    Qt.ConnectionType.QueuedConnection,
+                    Q_ARG(str, result),
+                )
+            except Exception as e:
+                error_msg = f"文本发送失败: {str(e)}"
+                print(traceback.format_exc())
+                QMetaObject.invokeMethod(
+                    self, "_on_generation_complete",
+                    Qt.ConnectionType.QueuedConnection,
+                    Q_ARG(str, error_msg),
+                )
+            finally:
+                self.is_generating = False
+
+        threading.Thread(target=_run, daemon=True).start()
     
     @Slot(str)
     def update_status(self, message):

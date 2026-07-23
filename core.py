@@ -2,6 +2,7 @@
 from config import CONFIGS
 from utils.clipboard_utils import ClipboardManager
 from utils.sentiment_analyzer import SentimentAnalyzer
+from utils.miao_transform import modify_message
 from image_processor import get_enhanced_loader, generate_image_with_dll, set_dll_global_config, clear_cache, update_dll_gui_settings, draw_content_auto
 
 import time
@@ -580,5 +581,75 @@ class ManosabaCore(QObject):  # 继承 QObject 以支持信号
         
         # 构建状态消息
         self.base_msg += f"角色: {CONFIGS.get_character()}, 用时: {int((time.time() - start_time) * 1000)}ms"
-        
+
         return self.base_msg
+
+    def send_text(self) -> str:
+        """
+        发送加喵文本（替代图片发送）。
+
+        流程：
+        1. 剪切输入框中的文字到剪贴板
+        2. 读取剪贴板文本
+        3. 执行加喵变换（modify_message）
+        4. 将变换后的文本复制回剪贴板
+        5. 自动粘贴并发送（Ctrl+V → Enter）
+        """
+        if not self._active_process_allowed():
+            return "前台应用不在白名单内"
+
+        start_time = time.time()
+
+        # 清空剪贴板，避免读到旧数据
+        self.clipboard_manager.clear_clipboard()
+        time.sleep(0.005)
+
+        # 剪切输入框文字（全选 + 剪切）
+        ctrl = Key.ctrl if platform != "darwin" else Key.cmd
+        self.kbd_controller.press(ctrl)
+        self.kbd_controller.press('a')
+        self.kbd_controller.release('a')
+        self.kbd_controller.press('x')
+        self.kbd_controller.release('x')
+        self.kbd_controller.release(ctrl)
+
+        # 等待剪贴板写入（最多 2.5 秒）
+        deadline = time.time() + 2.5
+        text = ""
+        while time.time() < deadline:
+            text, _ = self.clipboard_manager.get_clipboard_all()
+            if text and text.strip():
+                break
+            time.sleep(0.005)
+
+        if not text or not text.strip():
+            return "错误: 输入框为空"
+
+        print(f"[send_text] 原始文本: {text!r}")
+
+        # 加喵变换
+        transformed = modify_message(text)
+        print(f"[send_text] 变换后文本: {transformed!r}")
+
+        # 写回剪贴板（文本格式）
+        if not self.clipboard_manager.copy_text_to_clipboard(transformed):
+            return "复制文本到剪贴板失败"
+
+        # 等待剪贴板确认
+        time.sleep(0.05)
+
+        # 自动粘贴
+        self.kbd_controller.press(ctrl)
+        self.kbd_controller.press('v')
+        self.kbd_controller.release('v')
+        self.kbd_controller.release(ctrl)
+
+        # 自动发送
+        if CONFIGS.AUTO_SEND_IMAGE:  # 复用图片模式的 AUTO_SEND 开关
+            time.sleep(0.3)
+            self.kbd_controller.press(Key.enter)
+            self.kbd_controller.release(Key.enter)
+
+        elapsed = int((time.time() - start_time) * 1000)
+        print(f"[send_text] 发送完成，用时: {elapsed}ms")
+        return f"文本发送完成，用时: {elapsed}ms"

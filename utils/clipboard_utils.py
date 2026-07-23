@@ -32,6 +32,42 @@ class ClipboardManager:
     def __init__(self):
         self.platform = PLATFORM
 
+    def copy_text_to_clipboard(self, text: str) -> bool:
+        """将文本复制到剪贴板"""
+        try:
+            if self.platform.startswith("win"):
+                win32clipboard.OpenClipboard()
+                win32clipboard.EmptyClipboard()
+                win32clipboard.SetClipboardData(win32clipboard.CF_UNICODETEXT, text)
+                win32clipboard.CloseClipboard()
+                return True
+            if self.platform == "darwin":
+                import subprocess
+                result = subprocess.run(
+                    ["pbcopy"],
+                    input=text.encode("utf-8"),
+                    capture_output=True,
+                    check=False,
+                )
+                return result.returncode == 0
+            # Linux
+            result = subprocess.run(
+                ["xclip", "-selection", "clipboard"],
+                input=text.encode("utf-8"),
+                capture_output=True,
+                check=False,
+            )
+            return result.returncode == 0
+        except Exception as e:
+            print(f"复制文本到剪贴板失败: {e}")
+            return False
+        finally:
+            try:
+                if self.platform.startswith("win"):
+                    win32clipboard.CloseClipboard()
+            except Exception:
+                pass
+
     def copy_image_to_clipboard(self, bmp_bytes: bytes) -> bool:
         """将BMP字节数据复制到剪贴板"""
         try:
