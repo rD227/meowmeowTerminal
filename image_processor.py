@@ -2,7 +2,11 @@
 import ctypes
 import json
 import time
-import emoji
+try:
+    import emoji
+    _EMOJI_AVAILABLE = True
+except ImportError:
+    _EMOJI_AVAILABLE = False
 from io import BytesIO
 from ctypes import c_char_p, c_int, POINTER, c_ubyte, c_void_p, c_float, create_string_buffer, cast
 from typing import List, Dict, Any, Tuple, Optional
@@ -311,6 +315,8 @@ class ImageLoaderDLL:
 # 辅助函数：提取emoji并替换为占位符
 def _extract_emojis_and_replace(src: str):
     """提取emoji并获取字节位置"""
+    if not _EMOJI_AVAILABLE:
+        return [], []
     emoji_infos = emoji.emoji_list(src)
     if not emoji_infos:
         return [], []

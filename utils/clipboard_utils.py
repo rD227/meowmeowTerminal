@@ -13,7 +13,11 @@ from urllib.request import url2pathname
 
 from PIL import Image
 
-from bs4 import BeautifulSoup
+try:
+    from bs4 import BeautifulSoup
+    _BS4_AVAILABLE = True
+except ImportError:
+    _BS4_AVAILABLE = False
 
 
 PLATFORM = platform.lower()
@@ -214,6 +218,8 @@ class ClipboardManager:
         return html
 
     def _extract_img_src_from_html(self, html: str) -> str | None:
+        if not _BS4_AVAILABLE:
+            return None
         soup = BeautifulSoup(html, 'html.parser')
         img_tag = soup.find('img')
         return img_tag.get('src') if img_tag else None

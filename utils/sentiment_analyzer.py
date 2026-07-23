@@ -2,7 +2,11 @@ from typing import Optional, Dict, Any, List
 import re
 
 import requests
-import openai
+try:
+    import openai
+    _OPENAI_AVAILABLE = True
+except ImportError:
+    _OPENAI_AVAILABLE = False
 from config import CONFIGS
 
 

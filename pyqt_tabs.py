@@ -5,7 +5,15 @@ from PySide6.QtWidgets import QWidget
 from PySide6.QtCore import Signal
 from ui.components import Ui_CharaCfg
 from config import CONFIGS
-from utils.psd_utils import get_pose_options, get_clothing_options, get_action_options, get_expression_options
+try:
+    from utils.psd_utils import get_pose_options, get_clothing_options, get_action_options, get_expression_options
+    _PSD_UTILS_AVAILABLE = True
+except ImportError:
+    _PSD_UTILS_AVAILABLE = False
+    def get_pose_options(*a, **kw): return []
+    def get_clothing_options(*a, **kw): return []
+    def get_action_options(*a, **kw): return []
+    def get_expression_options(*a, **kw): return []
 
 class BackgroundTabWidget(QWidget):
     """背景标签页组件 - 使用UI设计器中的布局"""
@@ -457,10 +465,13 @@ class CharacterTabWidget(QWidget):
             config = self._component_config
             if not config:
                 return
-            
+
+            if not CONFIGS.character_list:
+                return  # 没有角色素材，跳过初始化
+
             # 初始化角色列表
             self._init_character_combo()
-            
+
             # 设置当前角色
             char_id = config.get("character_name", CONFIGS.character_list[1] if len(CONFIGS.character_list) > 1 else CONFIGS.character_list[0])
             self._set_character(char_id)

@@ -9,9 +9,18 @@ from ui.components import (
     TextComponent
 )
 from config import CONFIGS
-from image_processor import clear_cache
+try:
+    from image_processor import clear_cache
+except ImportError:
+    def clear_cache(): pass
 from path_utils import get_available_fonts, get_shader_list
-from utils.psd_utils import get_pose_options, get_clothing_options, get_action_options, get_expression_options
+try:
+    from utils.psd_utils import get_pose_options, get_clothing_options, get_action_options, get_expression_options
+except ImportError:
+    def get_pose_options(*a, **kw): return []
+    def get_clothing_options(*a, **kw): return []
+    def get_action_options(*a, **kw): return []
+    def get_expression_options(*a, **kw): return []
 
 # 组件类型定义
 COMPONENT_TYPES = {

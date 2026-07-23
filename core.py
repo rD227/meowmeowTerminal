@@ -1,20 +1,26 @@
 """魔裁文本框核心逻辑"""
 from config import CONFIGS
 from utils.clipboard_utils import ClipboardManager
-from utils.sentiment_analyzer import SentimentAnalyzer
+try:
+    from utils.sentiment_analyzer import SentimentAnalyzer
+except ImportError:
+    SentimentAnalyzer = None
 from utils.miao_transform import modify_message
-from image_processor import get_enhanced_loader, generate_image_with_dll, set_dll_global_config, clear_cache, update_dll_gui_settings, draw_content_auto
+try:
+    from image_processor import get_enhanced_loader, generate_image_with_dll, set_dll_global_config, clear_cache, update_dll_gui_settings, draw_content_auto
+except ImportError:
+    get_enhanced_loader = generate_image_with_dll = set_dll_global_config = None
+    clear_cache = update_dll_gui_settings = draw_content_auto = lambda *a, **kw: None
 
+import keyboard
 import time
 import re
 import random
 import psutil
 import threading
-from pynput.keyboard import Key, Controller
 from sys import platform
 from PIL import Image
 from typing import Dict, Any
-from PySide6.QtCore import QObject, Signal
 
 if platform.startswith("win"):
     try:
@@ -38,37 +44,35 @@ def _calculate_canvas_size():
     
     return (2560, height)
 
-class ManosabaCore(QObject):  # 继承 QObject 以支持信号
+class ManosabaCore:
     """魔裁文本框核心类"""
-    
-    # 定义信号
-    status_updated = Signal(str)  # 状态更新信号
-    gui_notification = Signal(bool, bool, str)  # GUI通知信号(情感分析器状态)
 
     def __init__(self):
-        super().__init__()  # 初始化 QObject
         # 初始化配置
-        self.kbd_controller = Controller()
         self.clipboard_manager = ClipboardManager()
 
         # 情感分析器 - 简单状态管理
-        self.sentiment_analyzer = SentimentAnalyzer()
+        self.sentiment_analyzer = SentimentAnalyzer() if SentimentAnalyzer else None
         self.sentiment_enabled = False  # 功能是否启用
         self.sentiment_available = False  # 分析器是否可用
         self.current_model = CONFIGS.gui_settings.get("sentiment_matching",{}).get("ai_model", "")  # 当前模型名称
         self.force_use = {} # 强制使用表情（情感分析后使用）
 
-        # 初始化DLL加载器
-        set_dll_global_config(CONFIGS.ASSETS_PATH, min_image_ratio=0.2)
-        update_dll_gui_settings(CONFIGS.gui_settings)
+        # 初始化DLL加载器（图片模式可用时才调用）
+        if set_dll_global_config is not None:
+            set_dll_global_config(CONFIGS.ASSETS_PATH, min_image_ratio=0.2)
+            update_dll_gui_settings(CONFIGS.gui_settings)
 
     def update_status(self, message: str):
-        """更新状态 - 使用信号"""
-        self.status_updated.emit(message)
+        """更新状态"""
+        print(f"[状态] {message}")
 
     def _notify_gui(self, enabled, available, error_message=""):
-        """通知GUI情感分析器状态变化 - 使用信号"""
-        self.gui_notification.emit(enabled, available, error_message)
+        """通知状态变化"""
+        if error_message:
+            print(f"[情感分析] {error_message}")
+        else:
+            print(f"[情感分析] {'启用' if enabled else '禁用'}, {'可用' if available else '不可用'}")
 
     def init_sentiment_analyzer(self):
         """初始化情感分析器（程序启动时调用）"""
@@ -586,14 +590,8 @@ class ManosabaCore(QObject):  # 继承 QObject 以支持信号
 
     def send_text(self) -> str:
         """
-        发送加喵文本（替代图片发送）。
-
-        流程：
-        1. 剪切输入框中的文字到剪贴板
-        2. 读取剪贴板文本
-        3. 执行加喵变换（modify_message）
-        4. 将变换后的文本复制回剪贴板
-        5. 自动粘贴并发送（Ctrl+V → Enter）
+        发送加喵文本。
+        流程：拦截 Enter → 全选剪切 → 加喵变换 → 粘贴 → Enter 发送
         """
         if not self._active_process_allowed():
             return "前台应用不在白名单内"
@@ -602,16 +600,12 @@ class ManosabaCore(QObject):  # 继承 QObject 以支持信号
 
         # 清空剪贴板，避免读到旧数据
         self.clipboard_manager.clear_clipboard()
-        time.sleep(0.005)
+        time.sleep(0.01)
 
-        # 剪切输入框文字（全选 + 剪切）
-        ctrl = Key.ctrl if platform != "darwin" else Key.cmd
-        self.kbd_controller.press(ctrl)
-        self.kbd_controller.press('a')
-        self.kbd_controller.release('a')
-        self.kbd_controller.press('x')
-        self.kbd_controller.release('x')
-        self.kbd_controller.release(ctrl)
+        # 全选 + 剪切
+        keyboard.send('ctrl+a')
+        time.sleep(0.01)
+        keyboard.send('ctrl+x')
 
         # 等待剪贴板写入（最多 2.5 秒）
         deadline = time.time() + 2.5
@@ -625,31 +619,24 @@ class ManosabaCore(QObject):  # 继承 QObject 以支持信号
         if not text or not text.strip():
             return "错误: 输入框为空"
 
-        print(f"[send_text] 原始文本: {text!r}")
-
         # 加喵变换
         transformed = modify_message(text)
-        print(f"[send_text] 变换后文本: {transformed!r}")
+        print(f"[加喵] {text!r}")
+        print(f"  → {transformed!r}")
 
         # 写回剪贴板（文本格式）
         if not self.clipboard_manager.copy_text_to_clipboard(transformed):
             return "复制文本到剪贴板失败"
 
-        # 等待剪贴板确认
         time.sleep(0.05)
 
-        # 自动粘贴
-        self.kbd_controller.press(ctrl)
-        self.kbd_controller.press('v')
-        self.kbd_controller.release('v')
-        self.kbd_controller.release(ctrl)
+        # 粘贴
+        keyboard.send('ctrl+v')
 
-        # 自动发送
-        if CONFIGS.AUTO_SEND_IMAGE:  # 复用图片模式的 AUTO_SEND 开关
+        # 发送
+        if CONFIGS.AUTO_SEND_IMAGE:
             time.sleep(0.3)
-            self.kbd_controller.press(Key.enter)
-            self.kbd_controller.release(Key.enter)
+            keyboard.send('enter')
 
         elapsed = int((time.time() - start_time) * 1000)
-        print(f"[send_text] 发送完成，用时: {elapsed}ms")
-        return f"文本发送完成，用时: {elapsed}ms"
+        return f"完成，用时 {elapsed}ms"

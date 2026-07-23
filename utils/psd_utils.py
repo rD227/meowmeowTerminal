@@ -40,7 +40,13 @@ import threading
 from functools import lru_cache
 from typing import Dict, List, Optional, Tuple
 
-from psd_tools import PSDImage
+try:
+    from psd_tools import PSDImage
+    _PSD_AVAILABLE = True
+except ImportError:
+    PSDImage = None
+    _PSD_AVAILABLE = False
+
 from PIL import Image
 
 # ---------- 缓存 ----------

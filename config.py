@@ -5,7 +5,12 @@ import yaml
 import json
 from sys import platform
 from path_utils import get_resource_path, ensure_path_exists, get_background_list
-from image_processor import update_dll_gui_settings, update_style_config, clear_cache
+try:
+    from image_processor import update_dll_gui_settings, update_style_config, clear_cache
+except ImportError:
+    def update_dll_gui_settings(*a, **kw): pass
+    def update_style_config(*a, **kw): pass
+    def clear_cache(*a, **kw): pass
 
 class StyleConfig:
     """样式配置类"""
@@ -92,7 +97,10 @@ class ConfigLoader:
 
     def _load_psd_if_needed(self):
         """遍历角色，遇到 emotion_count==0 就去读同名 psd"""
-        from utils.psd_utils import inspect_psd
+        try:
+            from utils.psd_utils import inspect_psd
+        except ImportError:
+            return  # psd_tools 未安装，跳过 PSD 角色加载
         for chara_id, meta in self.mahoshojo.items():
             if meta.get("emotion_count", 0) == 0:          # PSD 模式
                 psd_file = os.path.join(self.ASSETS_PATH, "chara", chara_id, f"{chara_id}.psd")
@@ -107,19 +115,18 @@ class ConfigLoader:
 
     def _get_current_character_from_layers(self):
         """从角色图层组件获取当前角色（第一个非固定角色的图层）"""
+        if not self.character_list:
+            return ""
         preview_style = self.style_configs[self.current_style]
         if not preview_style or 'image_components' not in preview_style:
             return self.character_list[1] if len(self.character_list) > 1 else self.character_list[0]
         # 查找第一个角色组件
         for component in preview_style['image_components']:
             if component.get("type") == "character":
-                # 如果不使用固定角色，返回该角色的名称
                 if not component.get("use_fixed_character", False):
                     return component.get("character_name", self.character_list[1] if len(self.character_list) > 1 else self.character_list[0])
-                # 如果使用固定角色，返回固定角色的名称
                 else:
                     return component.get("character_name", self.character_list[1] if len(self.character_list) > 1 else self.character_list[0])
-        
         # 如果没有找到角色组件，返回默认角色
         return self.character_list[1] if len(self.character_list) > 1 else self.character_list[0]
 
@@ -309,6 +316,7 @@ class ConfigLoader:
             if self.platform == "win32":
                 return {
                     "start_generate": "<ctrl>+e",
+                    "send_text": "<shift>+enter",
                     "next_character": "<ctrl>+<shift>+l",
                     "prev_character": "<ctrl>+<shift>+j",
                     "next_emotion": "<ctrl>+<shift>+o",

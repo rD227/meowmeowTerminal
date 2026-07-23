@@ -12,7 +12,10 @@ from ui.main_window import Ui_MainWindow
 from core import ManosabaCore
 from config import CONFIGS
 from pyqt_tabs import CharacterTabWidget, BackgroundTabWidget
-from image_processor import clear_cache
+try:
+    from image_processor import clear_cache
+except ImportError:
+    def clear_cache(): pass
 from path_utils import get_resource_path
 from pyqt_setting import SettingWindow
 from pyqt_hotkeys import HotkeyManager
