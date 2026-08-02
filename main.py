@@ -13,8 +13,9 @@ _lock = threading.Lock()
 
 def on_enter():
     """Enter 热键回调：加喵处理后发送"""
-    if not _enabled:
-        # 未启用时放行这次 Enter（keyboard suppress 已拦截，需手动补发）
+    if not _enabled or not core._active_process_allowed():
+        # 暂停 或 前台窗口不在白名单：放行这次 Enter
+        # （keyboard suppress 已拦截，需手动补发，否则会吞掉回车/中文候选确定）
         keyboard.send('enter')
         return
     # 在独立线程中执行，避免阻塞热键监听

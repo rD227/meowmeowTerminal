@@ -81,10 +81,10 @@ class ConfigLoader:
         if config_type == "keymap":
             if self.platform == "win32":
                 return {
-                    "toggle_listener": "<ctrl>+<alt>+p",
+                    "toggle_listener": "<ctrl>+<alt>+z",
                 }
             return {
-                "toggle_listener": "<cmd>+<alt>+p",
+                "toggle_listener": "<cmd>+<alt>+z",
             }
         return {}
 
