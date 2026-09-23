@@ -64,21 +64,26 @@ class ManosabaCore:
     def send_text(self) -> str:
         """
         发送加喵文本。
-        流程：拦截 Enter → 全选剪切 → 加喵变换 → 粘贴 → Enter 发送
+        流程：拦截 Enter → 全选复制 → 加喵变换 → 粘贴（覆盖选区）→ Enter 发送
+
+        用 ctrl+c 而不是 ctrl+x：剪切一旦后面任何一步失败，输入框里的原文就没了；
+        复制的话失败时原文还在（粘贴会覆盖选区，成功路径的表现完全一样）。
         """
         if not self._active_process_allowed():
             return "前台应用不在白名单内"
 
         start_time = time.time()
 
-        # 清空剪贴板，避免读到旧数据
-        self.clipboard_manager.clear_clipboard()
+        # 清空剪贴板，避免读到旧数据。清不掉就直接放弃本轮：
+        # 否则可能把剪贴板里的旧内容当成用户输入框里的文字粘回去
+        if not self.clipboard_manager.clear_clipboard():
+            return "错误: 剪贴板被占用，已放弃本轮"
         time.sleep(0.01)
 
-        # 全选 + 剪切
+        # 全选 + 复制
         keyboard.send('ctrl+a')
         time.sleep(0.01)
-        keyboard.send('ctrl+x')
+        keyboard.send('ctrl+c')
 
         # 等待剪贴板写入（最多 2.5 秒）
         deadline = time.time() + 2.5

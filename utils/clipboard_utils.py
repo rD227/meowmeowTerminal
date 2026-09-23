@@ -5,6 +5,8 @@ import os
 import tempfile
 import subprocess
 import re
+import time
+from contextlib import contextmanager
 from sys import platform
 import base64
 
@@ -30,6 +32,72 @@ if PLATFORM.startswith("win"):
         raise
 
 
+# 剪贴板是全系统共用的独占资源：别的进程（聊天软件、输入法、剪贴板管理器、
+# 云剪贴板）占用期间 OpenClipboard 会直接抛 ERROR_ACCESS_DENIED(5)。
+# 之前是一失败就放弃，所以经常莫名其妙报"复制文本到剪贴板失败"，统一走这里退避重试。
+_CLIPBOARD_RETRIES = 15
+_CLIPBOARD_RETRY_DELAY = 0.02  # 最坏等约 300ms
+
+
+@contextmanager
+def _open_clipboard():
+    """打开剪贴板，被占用时退避重试。
+
+    yield 出 True 表示成功打开（离开 with 时自动 CloseClipboard），
+    全部重试失败则 yield False。
+    """
+    opened = False
+    for _ in range(_CLIPBOARD_RETRIES):
+        try:
+            win32clipboard.OpenClipboard()
+            opened = True
+            break
+        except Exception:
+            time.sleep(_CLIPBOARD_RETRY_DELAY)
+
+    try:
+        yield opened
+    finally:
+        if opened:
+            try:
+                win32clipboard.CloseClipboard()
+            except Exception:
+                pass
+
+
+def _clipboard_write(write, retries=_CLIPBOARD_RETRIES) -> bool:
+    """往剪贴板写数据，被占用时整套退避重试。
+
+    注意不能只重试 OpenClipboard：打开成功之后，EmptyClipboard/SetClipboardData
+    仍然可能被别的进程抢走（ERROR_CLIPBOARD_NOT_OPEN 1418），所以
+    open → 写 → close 要一起重试。
+    """
+    last_error = None
+
+    for _ in range(retries):
+        try:
+            win32clipboard.OpenClipboard()
+        except Exception as e:
+            last_error = e
+            time.sleep(_CLIPBOARD_RETRY_DELAY)
+            continue
+
+        try:
+            write()
+            return True
+        except Exception as e:
+            last_error = e
+            time.sleep(_CLIPBOARD_RETRY_DELAY)
+        finally:
+            try:
+                win32clipboard.CloseClipboard()
+            except Exception:
+                pass
+
+    print(f"写剪贴板失败（重试 {retries} 次）: {last_error}")
+    return False
+
+
 class ClipboardManager:
     """剪贴板管理器"""
 
@@ -40,11 +108,11 @@ class ClipboardManager:
         """将文本复制到剪贴板"""
         try:
             if self.platform.startswith("win"):
-                win32clipboard.OpenClipboard()
-                win32clipboard.EmptyClipboard()
-                win32clipboard.SetClipboardData(win32clipboard.CF_UNICODETEXT, text)
-                win32clipboard.CloseClipboard()
-                return True
+                def _write():
+                    win32clipboard.EmptyClipboard()
+                    win32clipboard.SetClipboardData(win32clipboard.CF_UNICODETEXT, text)
+
+                return _clipboard_write(_write)
             if self.platform == "darwin":
                 import subprocess
                 result = subprocess.run(
@@ -65,12 +133,6 @@ class ClipboardManager:
         except Exception as e:
             print(f"复制文本到剪贴板失败: {e}")
             return False
-        finally:
-            try:
-                if self.platform.startswith("win"):
-                    win32clipboard.CloseClipboard()
-            except Exception:
-                pass
 
     def copy_image_to_clipboard(self, bmp_bytes: bytes) -> bool:
         """将BMP字节数据复制到剪贴板"""
@@ -103,19 +165,14 @@ class ClipboardManager:
     def _copy_image_windows(self, bmp_bytes: bytes) -> bool:
         """Windows 复制图片到剪贴板"""
         try:
-            win32clipboard.OpenClipboard()
-            win32clipboard.EmptyClipboard()
-            win32clipboard.SetClipboardData(win32clipboard.CF_DIB, bmp_bytes)
-            win32clipboard.CloseClipboard()
-            return True
+            def _write():
+                win32clipboard.EmptyClipboard()
+                win32clipboard.SetClipboardData(win32clipboard.CF_DIB, bmp_bytes)
+
+            return _clipboard_write(_write)
         except Exception as e:
             print(f"Windows 复制图片失败: {e}")
             return False
-        finally:
-            try:
-                win32clipboard.CloseClipboard()
-            except Exception:
-                pass
 
     def _copy_image_linux(self, png_bytes: bytes) -> bool:
         """Linux 复制图片到剪贴板"""
@@ -126,14 +183,13 @@ class ClipboardManager:
         """检查剪贴板中是否有图片"""
         try:
             if platform.startswith("win"):
-                win32clipboard.OpenClipboard()
-                try:
+                with _open_clipboard() as opened:
+                    if not opened:
+                        return False
                     # 尝试获取剪贴板中的图片数据
                     if win32clipboard.IsClipboardFormatAvailable(win32clipboard.CF_DIB):
                         return True
                     return False
-                finally:
-                    win32clipboard.CloseClipboard()
             if platform == "darwin":
                 # macOS 的实现
                 from AppKit import NSPasteboard, NSPasteboardTypePNG
@@ -148,57 +204,54 @@ class ClipboardManager:
         except Exception:
             return False
     
-    def clear_clipboard(self):
-        """清空剪贴板"""
+    def clear_clipboard(self) -> bool:
+        """清空剪贴板，返回是否成功。
+
+        失败必须让调用方知道：清不掉的话，后面读到的可能是剪贴板里的旧内容，
+        会被当成用户输入框里的文字。
+        """
+        if not self.platform.startswith("win"):
+            return True
         try:
-            win32clipboard.OpenClipboard()
-            win32clipboard.EmptyClipboard()
-            win32clipboard.CloseClipboard()
+            return _clipboard_write(win32clipboard.EmptyClipboard)
         except Exception as e:
             print(f"清空剪贴板失败: {e}")
-        finally:
-            try:
-                win32clipboard.CloseClipboard()
-            except Exception:
-                pass
+            return False
 
     def get_clipboard_all(self):
         text = ""
         image = None
-        
-        
-        try:
-            win32clipboard.OpenClipboard()
-            # 1️⃣ 优先直接取位图（真正的图片）
-            if win32clipboard.IsClipboardFormatAvailable(win32clipboard.CF_DIB):
-                data = win32clipboard.GetClipboardData(win32clipboard.CF_DIB)
-                header = (
-                    b"BM"
-                    + (len(data) + 14).to_bytes(4, "little")
-                    + b"\x00\x00\x00\x00\x36\x00\x00\x00"
-                )
-                image = Image.open(io.BytesIO(header + data))
-                image.load()
 
-            # 2️⃣ 取纯文本
-            if win32clipboard.IsClipboardFormatAvailable(win32clipboard.CF_UNICODETEXT):
-                text = win32clipboard.GetClipboardData(win32clipboard.CF_UNICODETEXT)
+        with _open_clipboard() as opened:
+            if not opened:
+                return "", None
 
-            # 3️⃣ 如果没有真正的位图，但有 HTML → 从 HTML 解析图片
-            if image is None:
-                html = self._get_clipboard_html()
-                if html:
-                    html_text, html_image = self.parse_html_clipboard(html)
-
-                    if html_image is not None:
-                        image = html_image
-        except Exception as e:
-            return "", None
-        finally:
             try:
-                win32clipboard.CloseClipboard()
+                # 1️⃣ 优先直接取位图（真正的图片）
+                if win32clipboard.IsClipboardFormatAvailable(win32clipboard.CF_DIB):
+                    data = win32clipboard.GetClipboardData(win32clipboard.CF_DIB)
+                    header = (
+                        b"BM"
+                        + (len(data) + 14).to_bytes(4, "little")
+                        + b"\x00\x00\x00\x00\x36\x00\x00\x00"
+                    )
+                    image = Image.open(io.BytesIO(header + data))
+                    image.load()
+
+                # 2️⃣ 取纯文本
+                if win32clipboard.IsClipboardFormatAvailable(win32clipboard.CF_UNICODETEXT):
+                    text = win32clipboard.GetClipboardData(win32clipboard.CF_UNICODETEXT)
+
+                # 3️⃣ 如果没有真正的位图，但有 HTML → 从 HTML 解析图片
+                if image is None:
+                    html = self._get_clipboard_html()
+                    if html:
+                        html_text, html_image = self.parse_html_clipboard(html)
+
+                        if html_image is not None:
+                            image = html_image
             except Exception:
-                pass
+                return "", None
 
         return text, image
 
