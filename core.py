@@ -89,7 +89,9 @@ class ManosabaCore:
         deadline = time.time() + 2.5
         text = ""
         while time.time() < deadline:
-            text, _ = self.clipboard_manager.get_clipboard_all()
+            # Text sending does not need image or HTML clipboard formats. Reading
+            # those formats can trigger slow delayed rendering in chat clients.
+            text = self.clipboard_manager.get_text()
             if text and text.strip():
                 break
             time.sleep(0.005)

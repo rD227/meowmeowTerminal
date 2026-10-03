@@ -6,6 +6,7 @@ import tempfile
 import subprocess
 import re
 import time
+import threading
 from contextlib import contextmanager
 from sys import platform
 import base64
@@ -37,6 +38,9 @@ if PLATFORM.startswith("win"):
 # 之前是一失败就放弃，所以经常莫名其妙报"复制文本到剪贴板失败"，统一走这里退避重试。
 _CLIPBOARD_RETRIES = 15
 _CLIPBOARD_RETRY_DELAY = 0.02  # 最坏等约 300ms
+_SUBPROCESS_TIMEOUT = 3
+_linux_xclip_owners = []
+_linux_xclip_owners_lock = threading.Lock()
 
 
 @contextmanager
@@ -104,7 +108,85 @@ class ClipboardManager:
     def __init__(self):
         self.platform = PLATFORM
 
+    @staticmethod
+    def _copy_text_linux(text: str) -> bool:
+        """Give xclip ownership without waiting for its long-lived owner process."""
+        try:
+            proc = subprocess.Popen(
+                ["xclip", "-selection", "clipboard", "-in"],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+            )
+            proc.stdin.write(text.encode("utf-8"))
+            proc.stdin.close()
+        except (OSError, BrokenPipeError) as e:
+            print(f"Unable to start xclip: {e}")
+            return False
+
+        # Surface immediate command failures without waiting for xclip to stop
+        # owning the selection, which can legitimately take an unlimited time.
+        time.sleep(0.02)
+        if proc.poll() not in (None, 0):
+            error = proc.stderr.read().decode("utf-8", errors="replace").strip()
+            print(f"xclip failed: {error or proc.returncode}")
+            return False
+
+        with _linux_xclip_owners_lock:
+            _linux_xclip_owners[:] = [p for p in _linux_xclip_owners if p.poll() is None]
+            _linux_xclip_owners.append(proc)
+        return True
+
     def copy_text_to_clipboard(self, text: str) -> bool:
+        """Copy plain text with a bounded foreground operation on every platform."""
+        try:
+            if self.platform.startswith("win"):
+                def _write():
+                    win32clipboard.EmptyClipboard()
+                    win32clipboard.SetClipboardData(win32clipboard.CF_UNICODETEXT, text)
+                return _clipboard_write(_write)
+            if self.platform == "darwin":
+                result = subprocess.run(
+                    ["pbcopy"], input=text.encode("utf-8"), capture_output=True,
+                    check=False, timeout=_SUBPROCESS_TIMEOUT,
+                )
+                return result.returncode == 0
+            return self._copy_text_linux(text)
+        except subprocess.TimeoutExpired:
+            print("Copying text to the clipboard timed out")
+            return False
+        except Exception as e:
+            print(f"Copying text to the clipboard failed: {e}")
+            return False
+
+    def get_text(self) -> str:
+        """Read text only; do not request image/HTML clipboard formats here."""
+        try:
+            if self.platform.startswith("win"):
+                with _open_clipboard() as opened:
+                    if not opened:
+                        return ""
+                    if win32clipboard.IsClipboardFormatAvailable(win32clipboard.CF_UNICODETEXT):
+                        return win32clipboard.GetClipboardData(win32clipboard.CF_UNICODETEXT)
+                    return ""
+            if self.platform == "darwin":
+                result = subprocess.run(
+                    ["pbpaste"], capture_output=True, check=False,
+                    timeout=_SUBPROCESS_TIMEOUT,
+                )
+            else:
+                result = subprocess.run(
+                    ["xclip", "-selection", "clipboard", "-out"],
+                    capture_output=True, check=False, timeout=_SUBPROCESS_TIMEOUT,
+                )
+            if result.returncode != 0:
+                return ""
+            return result.stdout.decode("utf-8", errors="replace")
+        except (subprocess.TimeoutExpired, OSError) as e:
+            print(f"Reading the clipboard failed: {e}")
+            return ""
+
+    def _copy_text_to_clipboard_legacy(self, text: str) -> bool:
         """将文本复制到剪贴板"""
         try:
             if self.platform.startswith("win"):

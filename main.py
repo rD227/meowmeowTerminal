@@ -1,7 +1,10 @@
 """加喵发送器 - 终端版入口"""
 import ctypes
+import faulthandler
 import sys
 import threading
+import time
+import traceback
 import keyboard
 
 from config import CONFIGS
@@ -59,9 +62,62 @@ if not acquire_single_instance():
 core = ManosabaCore()
 _enabled = True
 _lock = threading.Lock()
+_active_run_started_at = None
+_active_run_state_lock = threading.Lock()
+_STUCK_RUN_SECONDS = 10
+
+
+def _report_stuck_run(started_at):
+    """Print a traceback if a native clipboard or keyboard call does not return."""
+    with _active_run_state_lock:
+        if _active_run_started_at != started_at:
+            return
+    print(f"[meow] Processing has exceeded {_STUCK_RUN_SECONDS} seconds; traceback follows:")
+    faulthandler.dump_traceback(file=sys.stderr, all_threads=True)
+
+
+def _run():
+    global _active_run_started_at
+    started_at = time.monotonic()
+    with _active_run_state_lock:
+        _active_run_started_at = started_at
+
+    timer = threading.Timer(_STUCK_RUN_SECONDS, _report_stuck_run, args=(started_at,))
+    timer.daemon = True
+    timer.start()
+    try:
+        print("[meow] Processing...")
+        result = core.send_text()
+        print(f"[meow] {result}")
+    except Exception:
+        print("[meow] Processing failed with an exception:")
+        traceback.print_exc()
+    finally:
+        timer.cancel()
+        with _active_run_state_lock:
+            _active_run_started_at = None
+        _lock.release()
 
 
 def on_enter():
+    """Run one conversion without ever blocking the global keyboard hook."""
+    try:
+        if not _enabled or not core._active_process_allowed():
+            keyboard.send("enter")
+            return
+
+        # A hung native call used to keep this lock forever while every later
+        # Enter created another blocked daemon thread.  Do not build that queue.
+        if not _lock.acquire(blocking=False):
+            print("[meow] Previous processing is still running; ignored this Enter")
+            return
+        threading.Thread(target=_run, daemon=True).start()
+    except Exception:
+        print("[meow] Enter hotkey callback failed:")
+        traceback.print_exc()
+
+
+def _on_enter_legacy():
     """Enter 热键回调：加喵处理后发送"""
     if not _enabled or not core._active_process_allowed():
         # 暂停 或 前台窗口不在白名单：放行这次 Enter
@@ -72,7 +128,7 @@ def on_enter():
     threading.Thread(target=_run, daemon=True).start()
 
 
-def _run():
+def _run_legacy():
     with _lock:
         result = core.send_text()
         print(f"[加喵] {result}")
