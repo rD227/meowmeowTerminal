@@ -23,6 +23,11 @@ class ManosabaCore:
 
     def __init__(self):
         self.clipboard_manager = ClipboardManager()
+        self.diagnostic = None
+
+    def _diagnose(self, stage):
+        if self.diagnostic is not None:
+            self.diagnostic("stage", name=stage)
 
     def update_status(self, message: str):
         """更新状态"""
@@ -76,18 +81,22 @@ class ManosabaCore:
 
         # 清空剪贴板，避免读到旧数据。清不掉就直接放弃本轮：
         # 否则可能把剪贴板里的旧内容当成用户输入框里的文字粘回去
+        self._diagnose("clear_clipboard")
         if not self.clipboard_manager.clear_clipboard():
             return "错误: 剪贴板被占用，已放弃本轮"
         time.sleep(0.01)
 
         # 全选 + 复制
+        self._diagnose("select_all")
         keyboard.send('ctrl+a')
         time.sleep(0.01)
+        self._diagnose("copy_from_qq")
         keyboard.send('ctrl+c')
 
         # 等待剪贴板写入（最多 2.5 秒）
         deadline = time.time() + 2.5
         text = ""
+        self._diagnose("read_clipboard")
         while time.time() < deadline:
             # Text sending does not need image or HTML clipboard formats. Reading
             # those formats can trigger slow delayed rendering in chat clients.
@@ -100,22 +109,26 @@ class ManosabaCore:
             return "错误: 输入框为空"
 
         # 加喵变换
+        self._diagnose("transform")
         transformed = process_message(text)
         print(f"[加喵] {text!r}")
         print(f"  → {transformed!r}")
 
         # 写回剪贴板（文本格式）
+        self._diagnose("write_clipboard")
         if not self.clipboard_manager.copy_text_to_clipboard(transformed):
             return "复制文本到剪贴板失败"
 
         time.sleep(0.05)
 
         # 粘贴
+        self._diagnose("paste_to_qq")
         keyboard.send('ctrl+v')
 
         # 发送
         if CONFIGS.AUTO_SEND_IMAGE:
             time.sleep(0.3)
+            self._diagnose("send_enter")
             keyboard.send('enter')
 
         return f"完成，用时 {int((time.time() - start_time) * 1000)}ms"

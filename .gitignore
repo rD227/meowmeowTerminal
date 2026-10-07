@@ -12,3 +12,4 @@ config/keymap.yml
 /dll/Image_Processor/Image_Processor/
 .claude/
 CLAUDE.md
+/logs/
