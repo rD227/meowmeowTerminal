@@ -244,9 +244,40 @@ def toggle():
     print(f"[加喵] {'已恢复' if _enabled else '已暂停（Enter 恢复原始行为）'}")
 
 
+_intercepted_enters = set()
+
+
+def _handle_enter(event):
+    # Match the physical key directly: a missed key-up in keyboard's cached
+    # pressed-key set must not disable Enter interception.
+    if event.event_type == keyboard.KEY_DOWN:
+        if any(
+            ctypes.windll.user32.GetAsyncKeyState(vk) & 0x8000
+            for vk in (0x10, 0x11, 0x12, 0x5B, 0x5C)
+        ):
+            _intercepted_enters.discard(event.scan_code)
+            return True
+        _intercepted_enters.add(event.scan_code)
+        on_enter()
+        return False
+    if event.scan_code in _intercepted_enters:
+        _intercepted_enters.remove(event.scan_code)
+        return False
+    return True
+
+
+def _handle_pause(event):
+    # Use Windows' current modifier state, not keyboard's cached combinations.
+    if (event.event_type == keyboard.KEY_DOWN
+            and ctypes.windll.user32.GetAsyncKeyState(0x11) & 0x8000
+            and ctypes.windll.user32.GetAsyncKeyState(0x12) & 0x8000):
+        toggle()
+    return True
+
+
 keyboard.hook(_observe_key)
-keyboard.add_hotkey('enter', on_enter, suppress=True)
-keyboard.add_hotkey('ctrl+alt+p', toggle)
+keyboard.hook_key('enter', _handle_enter, suppress=True)
+keyboard.hook_key('p', _handle_pause, suppress=True)
 threading.Thread(target=_diagnostic_loop, name="meow-diagnostics", daemon=True).start()
 _diagnose("started", pid=os.getpid(), log_path=str(_LOG_PATH))
 print(f"[加喵] 诊断日志目录: {_LOG_DIR}")
