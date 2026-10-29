@@ -21,8 +21,10 @@ class ConfigLoader:
             self.platform = 'win32'
         elif platform == 'darwin':
             self.platform = 'darwin'
+        elif platform.startswith('linux'):
+            self.platform = 'linux'
         else:
-            self.platform = 'win32'
+            self.platform = 'linux'
 
         # 加载版本信息
         self.version_info = self._load_yaml_file("version.yml") or {}
@@ -79,7 +81,7 @@ class ConfigLoader:
                 "process_whitelist": [],
             }
         if config_type == "keymap":
-            if self.platform == "win32":
+            if self.platform in ("win32", "linux"):
                 return {
                     "toggle_listener": "<ctrl>+<alt>+z",
                 }

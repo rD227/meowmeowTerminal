@@ -1,4 +1,8 @@
-keyboard
-pyyaml
-pywin32>=311
+# Windows / macOS 的全局键盘钩子（keyboard 库在 Linux 上无法拦截按键）
+keyboard>=0.13.5; sys_platform != "linux"
+# Linux 的全局键盘抓取 + 虚拟键盘回放
+evdev>=1.6.1; sys_platform == "linux"
+pyyaml>=6.0
+pywin32>=311; sys_platform == "win32"
 psutil>=5.9.0
+pillow>=10.0
