@@ -11,25 +11,57 @@ import sys
 import threading
 import time
 import traceback
-import keyboard
 
 from config import CONFIGS
 from core import ManosabaCore
+from utils.keyboard_backend import create_backend, send_keys
 
 
 # 两个实例会互相把对方注入的回车当成真回车，无限互相触发（顺带互抢剪贴板），
-# 所以启动时用命名互斥体把第二个实例挡在注册热键之前。
+# 所以启动时先拿单实例锁，第二个实例在注册热键之前就被挡住。
 _MUTEX_NAME = "Local\\meowmeowTerminal.main"
 _ERROR_ALREADY_EXISTS = 183
 _ERROR_ACCESS_DENIED = 5
 
-# 句柄必须一直持有到进程退出（不能 CloseHandle），退出时系统自动释放
+# Windows 互斥体句柄必须一直持有到进程退出（不能 CloseHandle），退出时系统自动释放
 _instance_mutex = None
+# Linux 用 flock 锁文件，同样要保持文件对象存活
+_instance_lock_file = None
 
 
 def acquire_single_instance() -> bool:
     """拿到单实例锁返回 True，已有实例在跑返回 False。"""
-    global _instance_mutex
+    global _instance_mutex, _instance_lock_file
+
+    if sys.platform.startswith("linux"):
+        import fcntl
+        import tempfile
+
+        lock_dir = os.environ.get("XDG_RUNTIME_DIR") or tempfile.gettempdir()
+        lock_path = os.path.join(lock_dir, f"meowmeowTerminal-{os.getuid()}.lock")
+        try:
+            handle = open(lock_path, "a+", encoding="utf-8")
+        except OSError as exc:
+            print(f"[加喵] 无法创建单实例锁 {lock_path}: {exc}，跳过检查")
+            return True
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            handle.close()
+            return False
+        except OSError as exc:
+            print(f"[加喵] 单实例锁不可用（{exc}），跳过检查继续启动")
+            handle.close()
+            return True
+        try:
+            handle.seek(0)
+            handle.truncate()
+            handle.write(str(os.getpid()))
+            handle.flush()
+        except OSError:
+            pass
+        _instance_lock_file = handle
+        return True
 
     if not sys.platform.startswith("win"):
         return True
@@ -59,8 +91,12 @@ if not acquire_single_instance():
     print("=" * 40)
     print("  已经有一个加喵发送器在运行了，请先关掉它")
     print("  （两个实例会互相触发回车，还会互抢剪贴板）")
-    print("  查进程:  tasklist | findstr python")
-    print("  结束它:  Stop-Process -Id <PID> -Force")
+    if sys.platform.startswith("linux"):
+        print("  查进程:  pgrep -af 'python.*main.py'")
+        print("  结束它:  pkill -f 'python.*main.py'")
+    else:
+        print("  查进程:  tasklist | findstr python")
+        print("  结束它:  Stop-Process -Id <PID> -Force")
     print("=" * 40)
     sys.exit(1)
 
@@ -130,14 +166,11 @@ def _diagnostic_loop():
             pass
 
         if time.monotonic() >= next_heartbeat:
-            listener = getattr(keyboard, "_listener", None)
-            listening_thread = getattr(listener, "listening_thread", None)
-            processing_thread = getattr(listener, "processing_thread", None)
-            keyboard_queue = getattr(listener, "queue", None)
             last_key_age = (
                 round(time.monotonic() - _last_key_event_at, 1)
                 if _last_key_event_at is not None else None
             )
+            backend_info = backend.diagnostics() if backend is not None else {}
             _logger.info(
                 "heartbeat %s",
                 json.dumps({
@@ -146,10 +179,8 @@ def _diagnostic_loop():
                     "key_events": _key_event_count,
                     "last_key_age_s": last_key_age,
                     "system_input_idle_s": _input_idle_seconds(),
-                    "listener_alive": listening_thread.is_alive() if listening_thread else None,
-                    "processor_alive": processing_thread.is_alive() if processing_thread else None,
-                    "keyboard_queue_size": keyboard_queue.qsize() if keyboard_queue else None,
                     "processing_active": _lock.locked(),
+                    **backend_info,
                 }, ensure_ascii=False),
             )
             next_heartbeat = time.monotonic() + 60
@@ -157,6 +188,7 @@ def _diagnostic_loop():
 
 core = ManosabaCore()
 core.diagnostic = _diagnose
+backend = None
 _enabled = True
 _lock = threading.Lock()
 _active_run_started_at = None
@@ -216,7 +248,7 @@ def on_enter():
             check_ms=round((time.monotonic() - started) * 1000, 1),
         )
         if not _enabled or not allowed:
-            keyboard.send("enter")
+            send_keys("enter")
             return
 
         # A hung native call used to keep this lock forever while every later
@@ -237,47 +269,26 @@ def on_enter():
 
 
 def toggle():
-    """Ctrl+Alt+X 暂停/恢复"""
+    """Ctrl+Alt+P 暂停/恢复"""
     global _enabled
     _enabled = not _enabled
     _diagnose("toggled", enabled=_enabled)
     print(f"[加喵] {'已恢复' if _enabled else '已暂停（Enter 恢复原始行为）'}")
 
 
-_intercepted_enters = set()
+try:
+    backend = create_backend(on_enter, toggle, _observe_key)
+    backend.start()
+except Exception as exc:
+    print(f"[加喵] 键盘监听启动失败：{exc}")
+    traceback.print_exc()
+    if sys.platform.startswith("linux"):
+        print("  Linux 需要读取 /dev/input 并写入 /dev/uinput 的权限：")
+        print("    临时方案: sudo -E python3 main.py   # -E 用于保留 Wayland/DISPLAY 环境变量")
+        print("    长期方案: 把当前用户加入 input 组，并让 /dev/uinput 属于 input 组")
+        print("              sudo usermod -aG input \"$USER\"   # 重新登录后生效")
+    sys.exit(1)
 
-
-def _handle_enter(event):
-    # Match the physical key directly: a missed key-up in keyboard's cached
-    # pressed-key set must not disable Enter interception.
-    if event.event_type == keyboard.KEY_DOWN:
-        if any(
-            ctypes.windll.user32.GetAsyncKeyState(vk) & 0x8000
-            for vk in (0x10, 0x11, 0x12, 0x5B, 0x5C)
-        ):
-            _intercepted_enters.discard(event.scan_code)
-            return True
-        _intercepted_enters.add(event.scan_code)
-        on_enter()
-        return False
-    if event.scan_code in _intercepted_enters:
-        _intercepted_enters.remove(event.scan_code)
-        return False
-    return True
-
-
-def _handle_pause(event):
-    # Use Windows' current modifier state, not keyboard's cached combinations.
-    if (event.event_type == keyboard.KEY_DOWN
-            and ctypes.windll.user32.GetAsyncKeyState(0x11) & 0x8000
-            and ctypes.windll.user32.GetAsyncKeyState(0x12) & 0x8000):
-        toggle()
-    return True
-
-
-keyboard.hook(_observe_key)
-keyboard.hook_key('enter', _handle_enter, suppress=True)
-keyboard.hook_key('p', _handle_pause, suppress=True)
 threading.Thread(target=_diagnostic_loop, name="meow-diagnostics", daemon=True).start()
 _diagnose("started", pid=os.getpid(), log_path=str(_LOG_PATH))
 print(f"[加喵] 诊断日志目录: {_LOG_DIR}")
@@ -290,7 +301,9 @@ print("  Ctrl+C      → 退出")
 print("=" * 40)
 
 try:
-    keyboard.wait()
+    backend.wait()
 except KeyboardInterrupt:
     print("\n[加喵] 已退出")
-    sys.exit(0)
+finally:
+    backend.stop()
+sys.exit(0)

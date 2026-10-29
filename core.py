@@ -1,9 +1,10 @@
 """魔裁文本框核心逻辑"""
 from config import CONFIGS
 from utils.clipboard_utils import ClipboardManager
+from utils.keyboard_backend import send_keys
 from utils.miao_transform import process_message
 
-import keyboard
+import subprocess
 import time
 import psutil
 import threading
@@ -53,7 +54,6 @@ class ManosabaCore:
 
         elif platform == "darwin":
             try:
-                import subprocess
                 result = subprocess.run(
                     ["osascript", "-e",
                      'tell application "System Events" to get name of first process whose frontmost is true'],
@@ -62,6 +62,21 @@ class ManosabaCore:
                 return result.stdout.strip().lower() in wl
             except subprocess.SubprocessError:
                 return False
+
+        elif platform.startswith("linux"):
+            # xdotool 只认识 X11 / XWayland 窗口；纯 Wayland 应用查不到前台进程时
+            # 放行，否则整个工具在 Wayland 下会一直拒绝处理。
+            try:
+                result = subprocess.run(
+                    ["xdotool", "getactivewindow", "getwindowpid"],
+                    capture_output=True, text=True, check=False, timeout=1,
+                )
+                if result.returncode != 0 or not result.stdout.strip():
+                    return True
+                name = psutil.Process(int(result.stdout.strip())).name().lower()
+                return name in wl
+            except (OSError, ValueError, subprocess.SubprocessError, psutil.Error):
+                return True
 
         else:
             return True
@@ -88,10 +103,10 @@ class ManosabaCore:
 
         # 全选 + 复制
         self._diagnose("select_all")
-        keyboard.send('ctrl+a')
+        send_keys('ctrl+a')
         time.sleep(0.01)
         self._diagnose("copy_from_qq")
-        keyboard.send('ctrl+c')
+        send_keys('ctrl+c')
 
         # 等待剪贴板写入（最多 2.5 秒）
         deadline = time.time() + 2.5
@@ -123,12 +138,12 @@ class ManosabaCore:
 
         # 粘贴
         self._diagnose("paste_to_qq")
-        keyboard.send('ctrl+v')
+        send_keys('ctrl+v')
 
         # 发送
         if CONFIGS.AUTO_SEND_IMAGE:
             time.sleep(0.3)
             self._diagnose("send_enter")
-            keyboard.send('enter')
+            send_keys('enter')
 
         return f"完成，用时 {int((time.time() - start_time) * 1000)}ms"

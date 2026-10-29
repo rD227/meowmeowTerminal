@@ -4,7 +4,7 @@ import types
 import unittest
 
 
-SOURCE = pathlib.Path(__file__).resolve().parents[1] / "main.py"
+SOURCE = pathlib.Path(__file__).resolve().parents[1] / "utils" / "legacy_input.py"
 
 
 class FakeUser32:
