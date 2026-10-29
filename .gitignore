@@ -1,5 +1,7 @@
 /assets/cache/
 /__pycache__/
+/.venv/
+/venv/
 ui/__pycache__/
 utils/__pycache__/
 /.vs/

@@ -73,6 +73,21 @@ pip install -r requirements.txt
 
 Linux 下会安装 `evdev`（Windows 的 `pywin32`、`keyboard` 依赖会自动跳过）。
 
+如果发行版启用了 PEP 668（Arch、Debian 12+ 等会报 `externally-managed-environment`），
+请二选一，**不要**使用 `--break-system-packages`：
+
+```bash
+# 方案 A（Arch 推荐）：用系统包管理器
+sudo pacman -S --needed python-evdev python-yaml python-psutil python-pillow
+
+# 方案 B：创建虚拟环境
+python -m venv .venv
+.venv/bin/pip install -r requirements.txt
+.venv/bin/python main.py
+```
+
+> Debian / Ubuntu 对应的包名是 `python3-evdev python3-yaml python3-psutil python3-pil`。
+
 ### 3. 配置输入设备权限
 
 Linux 的全局按键拦截需要独占读取 `/dev/input/event*`，并通过 `/dev/uinput`
