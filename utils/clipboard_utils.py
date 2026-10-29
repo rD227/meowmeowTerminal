@@ -2,6 +2,7 @@
 
 import io
 import os
+import shutil
 import tempfile
 import subprocess
 import re
@@ -41,6 +42,81 @@ _CLIPBOARD_RETRY_DELAY = 0.02  # 最坏等约 300ms
 _SUBPROCESS_TIMEOUT = 3
 _linux_xclip_owners = []
 _linux_xclip_owners_lock = threading.Lock()
+
+# Linux 剪贴板后端：Wayland 下优先 wl-clipboard，X11 / XWayland 下用 xclip
+_linux_clipboard_backend = None
+
+
+def _detect_linux_clipboard() -> str:
+    """返回 "wayland" / "xclip" / ""（都不可用），结果缓存。"""
+    global _linux_clipboard_backend
+    if _linux_clipboard_backend is not None:
+        return _linux_clipboard_backend
+
+    if (os.environ.get("WAYLAND_DISPLAY")
+            and shutil.which("wl-copy") and shutil.which("wl-paste")):
+        _linux_clipboard_backend = "wayland"
+    elif shutil.which("xclip"):
+        _linux_clipboard_backend = "xclip"
+    else:
+        _linux_clipboard_backend = ""
+    return _linux_clipboard_backend
+
+
+def _run_clipboard_command(args, data: bytes = b"", timeout: float = _SUBPROCESS_TIMEOUT) -> bool:
+    """运行会自行退出的剪贴板命令（如默认 fork 到后台的 wl-copy）。
+
+    不用 subprocess.run(capture_output=True)：wl-copy 的后台子进程会继承管道，
+    communicate() 可能一直等不到 EOF 而超时，所以 stdout/stderr 一律丢给 DEVNULL。
+    """
+    try:
+        proc = subprocess.Popen(
+            args,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError as e:
+        print(f"Unable to run {args[0]}: {e}")
+        return False
+
+    try:
+        proc.communicate(data, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+        print(f"{args[0]} timed out")
+        return False
+    return proc.returncode == 0
+
+
+def _serve_xclip(args, data: bytes) -> bool:
+    """启动 xclip 并让它常驻持有 selection，不等待它退出。"""
+    try:
+        proc = subprocess.Popen(
+            ["xclip", *args],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+        )
+        proc.stdin.write(data)
+        proc.stdin.close()
+    except (OSError, BrokenPipeError) as e:
+        print(f"Unable to start xclip: {e}")
+        return False
+
+    # Surface immediate command failures without waiting for xclip to stop
+    # owning the selection, which can legitimately take an unlimited time.
+    time.sleep(0.02)
+    if proc.poll() not in (None, 0):
+        error = proc.stderr.read().decode("utf-8", errors="replace").strip()
+        print(f"xclip failed: {error or proc.returncode}")
+        return False
+
+    with _linux_xclip_owners_lock:
+        _linux_xclip_owners[:] = [p for p in _linux_xclip_owners if p.poll() is None]
+        _linux_xclip_owners.append(proc)
+    return True
 
 
 @contextmanager
@@ -110,32 +186,16 @@ class ClipboardManager:
 
     @staticmethod
     def _copy_text_linux(text: str) -> bool:
-        """Give xclip ownership without waiting for its long-lived owner process."""
-        try:
-            proc = subprocess.Popen(
-                ["xclip", "-selection", "clipboard", "-in"],
-                stdin=subprocess.PIPE,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
+        backend = _detect_linux_clipboard()
+        if backend == "wayland":
+            return _run_clipboard_command(
+                ["wl-copy", "--type", "text/plain;charset=utf-8"],
+                text.encode("utf-8"),
             )
-            proc.stdin.write(text.encode("utf-8"))
-            proc.stdin.close()
-        except (OSError, BrokenPipeError) as e:
-            print(f"Unable to start xclip: {e}")
-            return False
-
-        # Surface immediate command failures without waiting for xclip to stop
-        # owning the selection, which can legitimately take an unlimited time.
-        time.sleep(0.02)
-        if proc.poll() not in (None, 0):
-            error = proc.stderr.read().decode("utf-8", errors="replace").strip()
-            print(f"xclip failed: {error or proc.returncode}")
-            return False
-
-        with _linux_xclip_owners_lock:
-            _linux_xclip_owners[:] = [p for p in _linux_xclip_owners if p.poll() is None]
-            _linux_xclip_owners.append(proc)
-        return True
+        if backend == "xclip":
+            return _serve_xclip(["-selection", "clipboard", "-in"], text.encode("utf-8"))
+        print("未找到 wl-copy 或 xclip，无法写入剪贴板（请安装 wl-clipboard 或 xclip）")
+        return False
 
     def copy_text_to_clipboard(self, text: str) -> bool:
         """Copy plain text with a bounded foreground operation on every platform."""
@@ -174,6 +234,11 @@ class ClipboardManager:
                     ["pbpaste"], capture_output=True, check=False,
                     timeout=_SUBPROCESS_TIMEOUT,
                 )
+            elif _detect_linux_clipboard() == "wayland":
+                result = subprocess.run(
+                    ["wl-paste", "--no-newline", "--type", "text"],
+                    capture_output=True, check=False, timeout=_SUBPROCESS_TIMEOUT,
+                )
             else:
                 result = subprocess.run(
                     ["xclip", "-selection", "clipboard", "-out"],
@@ -205,13 +270,7 @@ class ClipboardManager:
                 )
                 return result.returncode == 0
             # Linux
-            result = subprocess.run(
-                ["xclip", "-selection", "clipboard"],
-                input=text.encode("utf-8"),
-                capture_output=True,
-                check=False,
-            )
-            return result.returncode == 0
+            return self._copy_text_linux(text)
         except Exception as e:
             print(f"复制文本到剪贴板失败: {e}")
             return False
@@ -257,8 +316,15 @@ class ClipboardManager:
             return False
 
     def _copy_image_linux(self, png_bytes: bytes) -> bool:
-        """Linux 复制图片到剪贴板"""
-        print("Linux 剪贴板支持尚未实现")
+        """Linux 复制图片到剪贴板（PNG 字节）"""
+        backend = _detect_linux_clipboard()
+        if backend == "wayland":
+            return _run_clipboard_command(["wl-copy", "--type", "image/png"], png_bytes)
+        if backend == "xclip":
+            return _serve_xclip(
+                ["-selection", "clipboard", "-t", "image/png", "-in"], png_bytes
+            )
+        print("未找到 wl-copy 或 xclip，无法复制图片")
         return False
 
     def has_image_in_clipboard(self) -> bool:
@@ -282,7 +348,22 @@ class ClipboardManager:
                     is not None
                 )
             # Linux 的实现
-            return False  # 需要根据具体实现补充
+            backend = _detect_linux_clipboard()
+            if backend == "wayland":
+                result = subprocess.run(
+                    ["wl-paste", "--list-types"],
+                    capture_output=True, check=False, timeout=_SUBPROCESS_TIMEOUT,
+                )
+                return result.returncode == 0 and any(
+                    mime.startswith(b"image/") for mime in result.stdout.split()
+                )
+            if backend == "xclip":
+                result = subprocess.run(
+                    ["xclip", "-selection", "clipboard", "-o", "-t", "TARGETS"],
+                    capture_output=True, check=False, timeout=_SUBPROCESS_TIMEOUT,
+                )
+                return result.returncode == 0 and b"image/" in result.stdout
+            return False
         except Exception:
             return False
     
@@ -292,15 +373,35 @@ class ClipboardManager:
         失败必须让调用方知道：清不掉的话，后面读到的可能是剪贴板里的旧内容，
         会被当成用户输入框里的文字。
         """
-        if not self.platform.startswith("win"):
-            return True
-        try:
-            return _clipboard_write(win32clipboard.EmptyClipboard)
-        except Exception as e:
-            print(f"清空剪贴板失败: {e}")
-            return False
+        if self.platform.startswith("win"):
+            try:
+                return _clipboard_write(win32clipboard.EmptyClipboard)
+            except Exception as e:
+                print(f"清空剪贴板失败: {e}")
+                return False
+
+        if self.platform == "darwin":
+            try:
+                result = subprocess.run(
+                    ["pbcopy"], input=b"", check=False, timeout=_SUBPROCESS_TIMEOUT,
+                )
+                return result.returncode == 0
+            except (OSError, subprocess.TimeoutExpired) as e:
+                print(f"清空剪贴板失败: {e}")
+                return False
+
+        backend = _detect_linux_clipboard()
+        if backend == "wayland":
+            return _run_clipboard_command(["wl-copy", "--clear"])
+        if backend == "xclip":
+            return _serve_xclip(["-selection", "clipboard", "-in"], b"")
+        return True
 
     def get_clipboard_all(self):
+        # get_clipboard_all 的图片/HTML 解析目前只实现了 Windows 版本
+        if not self.platform.startswith("win"):
+            return self.get_text(), None
+
         text = ""
         image = None
 
