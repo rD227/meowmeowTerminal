@@ -48,6 +48,79 @@
       2. @thgg678 _[PR #23](https://github.com/oplivilqo/manosaba_text_box/pull/23)_: [仓库地址](https://github.com/thgg678/Text_box-of-mahoushoujo_no_majosaiban)
 
 
+## Linux 使用说明
+
+当前目录下 `main.py` 是终端版入口，现已支持 Linux（X11 与 Wayland 均可）。
+
+### 1. 安装系统依赖
+
+剪贴板工具二选一，Wayland 推荐 `wl-clipboard`，X11 用 `xclip`：
+
+```bash
+# Arch
+sudo pacman -S wl-clipboard xclip xdotool
+# Debian / Ubuntu
+sudo apt install wl-clipboard xclip xdotool
+```
+
+`xdotool` 是可选的，仅用于「前台进程白名单」（见下方说明）。
+
+### 2. 安装 Python 依赖
+
+```bash
+pip install -r requirements.txt
+```
+
+Linux 下会安装 `evdev`（Windows 的 `pywin32`、`keyboard` 依赖会自动跳过）。
+
+### 3. 配置输入设备权限
+
+Linux 的全局按键拦截需要独占读取 `/dev/input/event*`，并通过 `/dev/uinput`
+回放键盘事件，因此需要相应权限。
+
+**临时方案**：直接用 root 运行。务必加 `-E`，否则 `WAYLAND_DISPLAY` / `DISPLAY`
+等环境变量会丢失，剪贴板和前台窗口查询都会失效：
+
+```bash
+sudo -E python3 main.py
+```
+
+**长期方案**：把用户加入 `input` 组，并让 `/dev/uinput` 属于 `input` 组：
+
+```bash
+sudo usermod -aG input "$USER"
+
+echo 'KERNEL=="uinput", GROUP="input", MODE="0660", OPTIONS+="static_node=uinput"' \
+  | sudo tee /etc/udev/rules.d/60-uinput.rules
+sudo udevadm control --reload-rules
+sudo udevadm trigger
+
+# 重新登录（或 newgrp input）后生效
+```
+
+### 4. 运行
+
+```bash
+python3 main.py
+```
+
+- `Enter` → 拦截后加喵，再粘贴并发送
+- `Ctrl+Alt+P` → 暂停 / 恢复
+- `Ctrl+C` → 退出
+
+### Linux 下的行为说明
+
+- **实现方式**：`keyboard` 库在 Linux 上不支持拦截按键，因此 Linux 使用
+  `evdev` 独占抓取物理键盘 + `uinput` 虚拟键盘回放。除被拦截的按键外，
+  其它按键都会原样送达前台应用。
+- **剪贴板**：Wayland 下自动使用 `wl-copy` / `wl-paste`，否则回退到 `xclip`。
+- **前台进程白名单**：通过 `xdotool` 获取前台窗口 PID。Wayland 原生窗口无法查询，
+  查询失败时会放行（否则整个工具不可用）；如果需要严格的白名单限制，请在 X11 会话下使用。
+  白名单在 `config/process_whitelist.yml` 的 `linux` 段中配置。
+- **按键连发**：由桌面环境（X server / Wayland compositor）根据按下状态自动生成，
+  程序不会重复回放。Caps Lock 等指示灯可能不会同步到物理键盘。
+- **单实例**：Linux 使用 `flock` 锁文件（位于 `$XDG_RUNTIME_DIR` 或 `/tmp`）防止重复启动。
+
 ## 使用方法与配置教程
 参阅[项目Wiki页面](https://github.com/oplivilqo/manosaba_text_box/wiki/GUI-%E5%88%86%E6%94%AF-(%E7%94%A8%E6%88%B7%E7%95%8C%E9%9D%A2))
 
