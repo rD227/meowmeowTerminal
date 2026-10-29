@@ -64,19 +64,19 @@ class ManosabaCore:
                 return False
 
         elif platform.startswith("linux"):
-            # xdotool 只认识 X11 / XWayland 窗口；纯 Wayland 应用查不到前台进程时
-            # 放行，否则整个工具在 Wayland 下会一直拒绝处理。
+            # 依次尝试 niri / Hyprland / sway / xdotool，拿到前台窗口的
+            # app_id、WM_CLASS 和进程名。完全查不到时不处理，避免误伤其它应用。
+            from utils.foreground import get_foreground_names
             try:
-                result = subprocess.run(
-                    ["xdotool", "getactivewindow", "getwindowpid"],
-                    capture_output=True, text=True, check=False, timeout=1,
-                )
-                if result.returncode != 0 or not result.stdout.strip():
-                    return True
-                name = psutil.Process(int(result.stdout.strip())).name().lower()
-                return name in wl
-            except (OSError, ValueError, subprocess.SubprocessError, psutil.Error):
-                return True
+                names = get_foreground_names()
+            except Exception:
+                names = set()
+            if not names:
+                # 查不到前台应用时不处理：宁可工具暂时没反应，也不要误伤别的应用。
+                # 不需要白名单时把 process_whitelist.yml 的 linux 段留空即可。
+                self._diagnose("foreground_unknown")
+                return False
+            return bool(names & wl)
 
         else:
             return True
@@ -121,6 +121,10 @@ class ManosabaCore:
             time.sleep(0.005)
 
         if not text or not text.strip():
+            formats = self.clipboard_manager.describe_clipboard()
+            self._diagnose("clipboard_empty", formats=formats)
+            if formats:
+                return f"错误: 输入框为空（剪贴板格式: {formats[:200]}）"
             return "错误: 输入框为空"
 
         # 加喵变换

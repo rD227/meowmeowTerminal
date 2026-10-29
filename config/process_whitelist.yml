@@ -2,10 +2,13 @@ darwin:
 - QQ.app
 - WeChat.app
 linux:
-- linuxqq
 - qq
+- linuxqq
+- com.tencent.qq
 - wechat
 - weixin
+- wechat-universal
+- com.tencent.wechat
 win32:
 - TIM.exe
 - QQ.exe

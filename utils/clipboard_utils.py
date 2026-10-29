@@ -17,6 +17,8 @@ from urllib.request import url2pathname
 
 from PIL import Image
 
+from utils.session_env import desktop_env
+
 try:
     from bs4 import BeautifulSoup
     _BS4_AVAILABLE = True
@@ -45,6 +47,8 @@ _linux_xclip_owners_lock = threading.Lock()
 
 # Linux 剪贴板后端：Wayland 下优先 wl-clipboard，X11 / XWayland 下用 xclip
 _linux_clipboard_backend = None
+# sudo 运行时补全原用户的 WAYLAND_DISPLAY / XDG_RUNTIME_DIR 等变量
+_SESSION_ENV = desktop_env()
 
 
 def _detect_linux_clipboard() -> str:
@@ -53,7 +57,7 @@ def _detect_linux_clipboard() -> str:
     if _linux_clipboard_backend is not None:
         return _linux_clipboard_backend
 
-    if (os.environ.get("WAYLAND_DISPLAY")
+    if (_SESSION_ENV.get("WAYLAND_DISPLAY")
             and shutil.which("wl-copy") and shutil.which("wl-paste")):
         _linux_clipboard_backend = "wayland"
     elif shutil.which("xclip"):
@@ -61,6 +65,15 @@ def _detect_linux_clipboard() -> str:
     else:
         _linux_clipboard_backend = ""
     return _linux_clipboard_backend
+
+
+def clipboard_backend_name() -> str:
+    """当前使用的剪贴板后端，用于启动提示和诊断。"""
+    if PLATFORM.startswith("win"):
+        return "win32"
+    if PLATFORM == "darwin":
+        return "pbcopy/pbpaste"
+    return _detect_linux_clipboard() or "未找到（请安装 wl-clipboard 或 xclip）"
 
 
 def _run_clipboard_command(args, data: bytes = b"", timeout: float = _SUBPROCESS_TIMEOUT) -> bool:
@@ -75,6 +88,7 @@ def _run_clipboard_command(args, data: bytes = b"", timeout: float = _SUBPROCESS
             stdin=subprocess.PIPE,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            env=_SESSION_ENV,
         )
     except OSError as e:
         print(f"Unable to run {args[0]}: {e}")
@@ -98,6 +112,7 @@ def _serve_xclip(args, data: bytes) -> bool:
             stdin=subprocess.PIPE,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
+            env=_SESSION_ENV,
         )
         proc.stdin.write(data)
         proc.stdin.close()
@@ -238,17 +253,62 @@ class ClipboardManager:
                 result = subprocess.run(
                     ["wl-paste", "--no-newline", "--type", "text"],
                     capture_output=True, check=False, timeout=_SUBPROCESS_TIMEOUT,
+                    env=_SESSION_ENV,
                 )
             else:
                 result = subprocess.run(
                     ["xclip", "-selection", "clipboard", "-out"],
                     capture_output=True, check=False, timeout=_SUBPROCESS_TIMEOUT,
+                    env=_SESSION_ENV,
                 )
             if result.returncode != 0:
                 return ""
             return result.stdout.decode("utf-8", errors="replace")
         except (subprocess.TimeoutExpired, OSError) as e:
             print(f"Reading the clipboard failed: {e}")
+            return ""
+
+    def describe_clipboard(self) -> str:
+        """读取失败时记录剪贴板格式，用于区分"真的为空"和"类型不匹配"。"""
+        try:
+            if self.platform.startswith("win"):
+                with _open_clipboard() as opened:
+                    if not opened:
+                        return "无法打开剪贴板"
+                    formats = []
+                    if win32clipboard.IsClipboardFormatAvailable(win32clipboard.CF_UNICODETEXT):
+                        formats.append("CF_UNICODETEXT")
+                    if win32clipboard.IsClipboardFormatAvailable(win32clipboard.CF_DIB):
+                        formats.append("CF_DIB")
+                    return ", ".join(formats) or "空"
+
+            if self.platform == "darwin":
+                return ""
+
+            backend = _detect_linux_clipboard()
+            if backend == "wayland":
+                result = subprocess.run(
+                    ["wl-paste", "--list-types"],
+                    capture_output=True, text=True, check=False,
+                    timeout=_SUBPROCESS_TIMEOUT, env=_SESSION_ENV,
+                )
+                types = result.stdout.split() if result.returncode == 0 else []
+                return ", ".join(types) or "空"
+
+            if backend == "xclip":
+                result = subprocess.run(
+                    ["xclip", "-selection", "clipboard", "-o", "-t", "TARGETS"],
+                    capture_output=True, check=False, timeout=_SUBPROCESS_TIMEOUT,
+                    env=_SESSION_ENV,
+                )
+                if result.returncode != 0:
+                    return "空"
+                return ", ".join(
+                    result.stdout.decode("utf-8", errors="replace").split()
+                ) or "空"
+
+            return ""
+        except (OSError, subprocess.SubprocessError):
             return ""
 
     def _copy_text_to_clipboard_legacy(self, text: str) -> bool:
@@ -353,6 +413,7 @@ class ClipboardManager:
                 result = subprocess.run(
                     ["wl-paste", "--list-types"],
                     capture_output=True, check=False, timeout=_SUBPROCESS_TIMEOUT,
+                    env=_SESSION_ENV,
                 )
                 return result.returncode == 0 and any(
                     mime.startswith(b"image/") for mime in result.stdout.split()
@@ -361,6 +422,7 @@ class ClipboardManager:
                 result = subprocess.run(
                     ["xclip", "-selection", "clipboard", "-o", "-t", "TARGETS"],
                     capture_output=True, check=False, timeout=_SUBPROCESS_TIMEOUT,
+                    env=_SESSION_ENV,
                 )
                 return result.returncode == 0 and b"image/" in result.stdout
             return False

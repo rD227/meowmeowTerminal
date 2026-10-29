@@ -63,7 +63,8 @@ sudo pacman -S wl-clipboard xclip xdotool
 sudo apt install wl-clipboard xclip xdotool
 ```
 
-`xdotool` 是可选的，仅用于「前台进程白名单」（见下方说明）。
+`xdotool` 是可选的，仅用于 X11 / XWayland 下的「前台进程白名单」查询；
+niri、Hyprland、sway/i3 会优先使用各自的 IPC，不需要 xdotool。
 
 ### 2. 安装 Python 依赖
 
@@ -93,8 +94,9 @@ python -m venv .venv
 Linux 的全局按键拦截需要独占读取 `/dev/input/event*`，并通过 `/dev/uinput`
 回放键盘事件，因此需要相应权限。
 
-**临时方案**：直接用 root 运行。务必加 `-E`，否则 `WAYLAND_DISPLAY` / `DISPLAY`
-等环境变量会丢失，剪贴板和前台窗口查询都会失效：
+**临时方案**：直接用 root 运行。建议加 `-E` 保留会话环境变量；即使不加，
+程序也会根据 `SUDO_UID` 自动找回原用户的 `WAYLAND_DISPLAY`、`XDG_RUNTIME_DIR`、
+`NIRI_SOCKET` 和 `DISPLAY`（见 `utils/session_env.py`）：
 
 ```bash
 sudo -E python3 main.py
@@ -129,9 +131,12 @@ python3 main.py
   `evdev` 独占抓取物理键盘 + `uinput` 虚拟键盘回放。除被拦截的按键外，
   其它按键都会原样送达前台应用。
 - **剪贴板**：Wayland 下自动使用 `wl-copy` / `wl-paste`，否则回退到 `xclip`。
-- **前台进程白名单**：通过 `xdotool` 获取前台窗口 PID。Wayland 原生窗口无法查询，
-  查询失败时会放行（否则整个工具不可用）；如果需要严格的白名单限制，请在 X11 会话下使用。
-  白名单在 `config/process_whitelist.yml` 的 `linux` 段中配置。
+- **前台进程白名单**：按合成器依次用 niri IPC、Hyprland、sway/i3、`xdotool` 查询前台
+  窗口的 app_id / WM_CLASS / 进程名，再与白名单比对。查询失败时**不会处理**
+  （宁可暂时没反应，也不误伤其它应用）；不需要白名单时，把
+  `config/process_whitelist.yml` 的 `linux` 段留空即可。
+- **sudo 运行**：程序会通过 `SUDO_UID` 自动恢复原用户的会话环境；启动时会打印
+  当前使用的剪贴板后端，便于排查。
 - **按键连发**：由桌面环境（X server / Wayland compositor）根据按下状态自动生成，
   程序不会重复回放。Caps Lock 等指示灯可能不会同步到物理键盘。
 - **单实例**：Linux 使用 `flock` 锁文件（位于 `$XDG_RUNTIME_DIR` 或 `/tmp`）防止重复启动。

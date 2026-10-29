@@ -292,6 +292,9 @@ except Exception as exc:
 threading.Thread(target=_diagnostic_loop, name="meow-diagnostics", daemon=True).start()
 _diagnose("started", pid=os.getpid(), log_path=str(_LOG_PATH))
 print(f"[加喵] 诊断日志目录: {_LOG_DIR}")
+if sys.platform.startswith("linux"):
+    from utils.clipboard_utils import clipboard_backend_name
+    print(f"[加喵] 剪贴板后端: {clipboard_backend_name()}")
 
 print("=" * 40)
 print("  加喵发送器已启动")
